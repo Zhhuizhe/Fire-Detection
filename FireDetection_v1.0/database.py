@@ -5,30 +5,49 @@ import pandas as pd
 
 class Database(object):
     def __init__(self, server, database, username, password):
+        self.__tablename_dict = {"fire_output": 1, "relative_fire": 2, "absolute_fire": 3}
         self.__conn = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};SERVER='+server+';DATABASE='+database+';UID='+username+';PWD='+ password)
         if not self.__conn:
             print("数据库连接失败")
         else:
             print("已成功连接数据库" + database)
-        self.__cursor = self.__conn.__cursor()
+        self.__cursor = self.__conn.cursor()
 
-    def df_insert(self, dataframe, time, tablename):
-        date = datetime.datetime.strptime("20201202", "%Y%m%d")
-        time = datetime.datetime.strptime("1430", "%H%M")
-        for index, row in dataframe.iterrows():
-            # 将dataframe插入至表格relative_fire中
-            # row[1]--中心经度, row[2]--中心纬度, row[3]--热点像元个数, row[4]--热点面积, row[5]--林地概率
-            # row[6]--草地概率, row[7]--农田概率, row[8]--其他概率, row[9]--平均置信度, row[10]--备注
-            self.__cursor.execute("""INSERT INTO relative_fire (
-            中心经度,中心纬度,日期,
-            时间,热点像元个数,热点面积,
-            林地概率,草地概率,农田概率,
-            其他概率,平均可信度,备注) values(?,?,?,?,?,?,?,?,?,?,?,?)""", row[1], row[2], date, time, row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10])
-            self.__cursor.commit()
+    def df_insert(self, dataframe, tablename):
+        table_no = self.__tablename_dict.get(tablename)
+        if not table_no:
+            print("ERROR:can't find table " + tablename)
+            return
+        if table_no == self.__tablename_dict['fire_output']:
+            for index, row in dataframe.iterrows():
+                self.__cursor.execute("""INSERT INTO fire_output(
+                中心经度,中心纬度,日期,时间,亚像元火点面积,林地概率,草地概率,
+                农田概率,其他概率,[7波段像元值],[14波段像元值],所在市,所在县,备注) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", row[2], row[3], row[0], row[1], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13])
+                self.__cursor.commit()
+        elif table_no == self.__tablename_dict['relative_fire']:
+            for index, row in dataframe.iterrows():
+                self.__cursor.execute("""INSERT INTO relative_fire (
+                中心经度,中心纬度,日期,时间,亚像元火点面积,林地概率,草地概率,
+                农田概率,其他概率,7波段像元值,14波段像元值,备注) values(?,?,?,?,?,?,?,?,?,?,?,?)""", row[2], row[3], row[0], row[1], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11])
+                self.__cursor.commit()
+        elif table_no == self.__tablename_dict['absolute_fire']:
+            for index, row in dataframe.iterrows():
+                self.__cursor.execute("""INSERT INTO relative_fire (
+                中心经度,中心纬度,日期,时间,亚像元火点面积,林地概率,草地概率,
+                农田概率,其他概率,7波段像元值,14波段像元值,备注) values(?,?,?,?,?,?,?,?,?,?,?,?)""", row[2], row[3], row[0], row[1], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11])
+                self.__cursor.commit()
 
-    def execute_script(self, script):
-        self.__cursor.execute(script)
+    def img_insert(self, img_path, filename):
+        date = datetime.datetime.strptime(filename[4:12], "%Y%m%d")
+        time = datetime.datetime.strptime(filename[12:16], "%H%M")
+        self.__cursor.execute("""INSERT INTO Image (日期,时间,真彩图,火情图,云图,[7通道图像],[7_14通道图像],全通道图像) values(?,?,?,?,?,?,?,?)""",
+                              date, time, img_path[0], img_path[1], img_path[2], img_path[3], img_path[4], img_path[5])
+        self.__cursor.commit()
+
+    def select_query(self, script):
+        rows = self.__cursor.execute(script).fetchall()
         self.__conn.commit()
+        return rows
 
     def close(self):
         self.__cursor.close()

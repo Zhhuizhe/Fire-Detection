@@ -100,4 +100,4 @@ def hd_test(band_no1, band_no2, band_no3, fire_lat_index, fire_lon_index, h8_ban
     kernal_no2_size7, deta_kernal_size7, T_no2_size7, deta_size7, T_no1_size7, T_no3_size7 = \
                 calcu_band_features(band_no1, band_no2, band_no3, x_start_size7, y_start_size7, size_size7, kernal_point_size7)
     
-    return T_no1, T_no2, deta, n1_std_with_valid_pixels,n2_std_with_valid_pixels,deta_kernal.mean(),nightBool,cloudBool,waterBool,kernal_no2_size7.mean(),deta_kernal_size7.mean(),n_cloud,n_cloud_band2
+    return T_no1, T_no2, T_no3, n1_std_with_valid_pixels,n2_std_with_valid_pixels,deta_kernal.mean(),nightBool,cloudBool,waterBool,kernal_no2_size7.mean(),deta_kernal_size7.mean(),n_cloud,n_cloud_band2
