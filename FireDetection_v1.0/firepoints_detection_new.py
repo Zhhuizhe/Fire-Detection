@@ -1,12 +1,11 @@
 import os
-import fdj
+import time
 import datetime
 import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
 
 from himawari import Himawari
-from database import Database
 
 
 def mat2col(mat, kernel_size):
@@ -63,7 +62,10 @@ def cloudEliminate(fire_relative_df, threshold):
 
 
 # 对POI_time时间的影像pk文件，做火点检测
-def fire_detection(pk_path, himawari):
+def fire_detection(pk_path):
+    start_time = time.time()
+
+    h = Himawari("./fire_detection/H8_pk/SHJC202102231630.pk")
 
     args_dict = {
         "band3_th": 0.13,  # 3通道阈值
@@ -71,7 +73,9 @@ def fire_detection(pk_path, himawari):
         "band7_relative_night_th": 283,
         "band7_std_night_th": 4.39,  # 夜间判别
         "band7_14_night_th": 3.3,  # 7通道-14通道 阈值，中红外-远红外
-        "num_of_cluster_th": 20,  # 一片火的像素个数不超过cluster_limit
+        "num_of_cluster_th": 20,
+        "window_size": 15,
+        "cloud_edge_window_size": 5,
         # 可调参数
         "valid_pxl_ratio": 0.7,
         "num_of_cloud_edge": 6,
@@ -93,7 +97,6 @@ def fire_detection(pk_path, himawari):
     band7_14_incre_th = args_dict['band7_14_incre_th']
     num_of_cluster_th = args_dict['num_of_cluster_th']
     valid_pxl_ratio = args_dict['valid_pxl_ratio']
-    num_of_cloud_edge = args_dict['num_of_cloud_edge']
     band7_minimum_th = args_dict['band7_minimum_th']
 
     # 夜间判识条件
@@ -101,18 +104,18 @@ def fire_detection(pk_path, himawari):
     band7_14_night_th = args_dict['band7_14_night_th']
 
     # 从pk文件中，读取经纬度，和16个波段的影像
-    h8_band2 = himawari.ch2_refl
-    h8_band3 = himawari.ch3_refl
-    h8_band4 = himawari.ch4_refl
-    h8_band6 = himawari.ch6_refl
-    h8_band7 = himawari.ch7_brt
-    h8_band14 = himawari.ch14_brt
-    h8_band15 = himawari.ch15_brt
-    h8_band7_14 = himawari.ch7_14_brt
+    h8_band2 = h.ch2_refl
+    h8_band3 = h.ch3_refl
+    h8_band4 = h.ch4_refl
+    h8_band6 = h.ch6_refl
+    h8_band7 = h.ch7_brt
+    h8_band14 = h.ch14_brt
+    h8_band15 = h.ch15_brt
+    h8_band7_14 = h.ch7_14_brt
     h8_band3_plus_4 = h8_band3 + h8_band4
-    lon_list = himawari.longitude_arr
-    lat_list = himawari.latitude_arr
-    pk_filename = himawari.filename
+    lon_list = h.longitude_arr
+    lat_list = h.latitude_arr
+    pk_filename = h.filename
     curr_datetime = datetime.datetime.strptime(pk_filename[4:], "%Y%m%d%H%M")
 
     # 读取上一帧的pk影像，用于绝对火点判定
@@ -123,8 +126,8 @@ def fire_detection(pk_path, himawari):
     pk_last_path = os.path.join(pk_path, "SHJC" + last_datetime + ".pk")
     if os.path.exists(pk_last_path):
         himawari_last = Himawari(pk_last_path)
-        band7_deta = himawari.ch7_brt - himawari_last.ch7_brt
-        band7_14_deta = himawari.ch7_14_brt - himawari_last.ch7_14_brt
+        band7_deta = h.ch7_brt - himawari_last.ch7_brt
+        band7_14_deta = h.ch7_14_brt - himawari_last.ch7_14_brt
 
     # 云掩膜
     night_mask = np.logical_and(h8_band3 < 0.01, h8_band4 < 0.01)
@@ -134,14 +137,23 @@ def fire_detection(pk_path, himawari):
     cloud_img = np.array(cloud_mask, dtype=int)
 
     # 有效像元判识
-    mat_tmp = mat2col(cloud_img, 15)
+    ws = args_dict["window_size"]
+    if not ws or ws % 2 == 0:
+        print(f"Wrong window size, window size must be a odd number(window size:{ws})")
+        return
+    mat_tmp = mat2col(cloud_img, args_dict["window_size"])
     n_cloud_pxl_mat = np.sum(mat_tmp, axis=0).reshape((1000, 1100))
     invalid_pxl_mat = (n_cloud_pxl_mat / (15 * 15) > 1 - valid_pxl_ratio)
 
     # 云边判识
-    mat_tmp = mat2col(cloud_img, 5)
-    n_cloud_pxl_mat = np.sum(mat_tmp, axis=0).reshape((1000, 1100))
-    cloud_edge_pxl_mat = n_cloud_pxl_mat > num_of_cloud_edge
+    cloud_edge_ws = args_dict["window_size"]
+    if not cloud_edge_ws or cloud_edge_ws % 2 == 0:
+        print(f"Wrong window size, window size must be a odd number(window size:{cloud_edge_ws})")
+        return
+    offset = (ws - cloud_edge_ws) / 2
+    idx_arr = np.arange(offset * (ws + 1), offset * (ws + 1) + cloud_edge_ws - 1, 1)
+    n_cloud_pxl_mat = np.sum(mat_tmp, axis=0)
+    cloud_edge_pxl_mat = n_cloud_pxl_mat > args_dict["num_of_cloud_edge"]
 
     # 排除低温像元
     non_fire_mat = h8_band7 < band7_minimum_th
@@ -151,10 +163,11 @@ def fire_detection(pk_path, himawari):
     yunnan_max_lon_idx = int((106.20 - 96.0) / 0.01)
     yunnan_min_lat_idx = int((30 - 29.26) / 0.01)
     yunnan_max_lat_idx = int((30 - 21.12) / 0.01)
-    pixel_num = ((106.20 - 97.50) / 0.01 + 1) * ((29.26 - 21.12) / 0.01 + 1)
 
     th_mat = cloud_img + invalid_pxl_mat + invalid_pxl_mat + cloud_edge_pxl_mat + non_fire_mat
     valid_pxl_pos = np.where(th_mat == 0)
+
+
     # valid_pxl_pos = np.vstack((valid_pxl_pos[0], valid_pxl_pos[1])).T
 
     # 绝对火点判断
@@ -164,105 +177,65 @@ def fire_detection(pk_path, himawari):
             np.logical_or(fire_absolute_arr, np.logical_and(band7_deta > band7_incre_th, band7_14_deta > band7_14_incre_th))
 
     # 相对火点判断，ws(window size)窗口大小
-    h8_band7_14 = h8_band7_14[valid_pxl_pos[0], valid_pxl_pos[1]]
+    # h8_band7_14 = h8_band7_14[valid_pxl_pos[0], valid_pxl_pos[1]]
     band7_ws15 = mat2col(h8_band7, 15)
     band7_14_ws15 = mat2col(h8_band7_14, 15)
     band7_14_ws7 = mat2col(h8_band7_14, 7)
-
     band7_ws15_norm = ((h8_band7 - np.mean(band7_ws15, axis=0).reshape((1000, 1100))) / np.std(band7_ws15, axis=0).reshape((1000, 1100)))
-    band7_14_ws15_norm = ((band7_14_ws15 - np.mean(band7_14_ws15, axis=0)) / np.std(band7_14_ws15, axis=0)).reshape((1000, 1100))
+    band7_14_ws15_norm = ((h8_band7_14 - np.mean(band7_14_ws15, axis=0).reshape((1000, 1100))) / np.std(band7_14_ws15, axis=0).reshape((1000, 1100)))
     band7_14_ws7_mean = np.mean(band7_14_ws7, axis=0).reshape((1000, 1100))
-    n1plusn2 = band7_ws15_norm + band7_14_ws15_norm
-    if (6.34 <= n1plusn2 < 7 and (n1plusn2 + band7_14_ws7_mean > 14) and band7_ws15_norm > 2.91 and h8_band7_14 > 12.3) or \
-        (7.0 <= n1plusn2 < 8 and n1plusn2 + band7_14_ws7_mean > 13.4 and band7_ws15_norm > 2.42 and h8_band7_14 > 10.2) or \
-        (8.0 <= n1plusn2 < 9 and n1plusn2 + band7_14_ws7_mean > 12.38 and band7_ws15_norm > 2.42 and h8_band7_14 > 8.8) or \
-        (9.0 <= n1plusn2 < 10.0 and n1plusn2 + band7_14_ws7_mean > 10.4 and band7_ws15_norm > 4 and h8_band7_14 > 7.1) or \
-        (n1plusn2 >= 10.0 and n1plusn2 + band7_14_ws7_mean > 0.8 and band7_ws15_norm > 4.35 and h8_band7_14 > 6.0):
-        pass
 
-    if (band7_14_ws7_mean > 6.57 and 6.35 < n1plusn2 < 7.0 and band7_ws15_norm > 2.91 and h8_band7_14 > 12.3) or \
-        (band7_14_ws7_mean > 4.4 and 7.61 < n1plusn2 < 8.0 and band7_ws15_norm > 3.47 and h8_band7_14 > 8.4) or \
-        (band7_14_ws7_mean > 2.1 and 8 < n1plusn2 < 9.0 and band7_14_ws15_norm > 4.26 and h8_band7_14 > 6.6):
-        pass
+    ws15_norm_sum = band7_ws15_norm + band7_14_ws15_norm
+    th_dict = {
+        "th1": {"con1": (6.34, 7), "con2": 14, "con3": 2.91, "con4": 12.3},
+        "th2": {"con1": (7, 8), "con2": 13.4, "con3": 2.42, "con4": 10.2},
+        "th3": {"con1": (8, 9), "con2": 12.38, "con3": 2.42, "con4": 8.8},
+        "th4": {"con1": (9, 10), "con2": 10.4, "con3": 4, "con4": 7.1},
+        "th5": {"con1": (10, 10000), "con2": 0.8, "con3": 4.35, "con4": 6.0}
+    }
+    mat_tmp = ws15_norm_sum + band7_14_ws7_mean
+    # if (6.34 <= ws15_norm_sum < 7 and (ws15_norm_sum + band7_14_ws7_mean > 14) and band7_ws15_norm > 2.91 and h8_band7_14 > 12.3) or \
+    #     (7.0 <= ws15_norm_sum < 8 and ws15_norm_sum + band7_14_ws7_mean > 13.4 and band7_ws15_norm > 2.42 and h8_band7_14 > 10.2) or \
+    #     (8.0 <= ws15_norm_sum < 9 and ws15_norm_sum + band7_14_ws7_mean > 12.38 and band7_ws15_norm > 2.42 and h8_band7_14 > 8.8) or \
+    #     (9.0 <= ws15_norm_sum < 10.0 and ws15_norm_sum + band7_14_ws7_mean > 10.4 and band7_ws15_norm > 4 and h8_band7_14 > 7.1) or \
+    #     (ws15_norm_sum >= 10.0 and ws15_norm_sum + band7_14_ws7_mean > 0.8 and band7_ws15_norm > 4.35 and h8_band7_14 > 6.0):
+    #     pass
+    ret = np.zeros((1000, 1100))
+    for val in dict_tmp.values():
+        con1 = np.logical_and(val["con1"][0] <= ws15_norm_sum, ws15_norm_sum < val["con1"][1])
+        con2 = (ws15_norm_sum + band7_14_ws7_mean > val["con2"])
+        con3 = (band7_ws15_norm > val["con3"])
+        con4 = (h8_band7_14 > val["con4"])
+        print(len(np.where(con1 + con2 + con3 + con4 - 4 > 0)[0]))
+        print(con1 + con2 + con3 + con4 - 4)
+        ret = np.logical_or(ret, (con1 + con2 + con3 + con4 - 4) > 0)
 
-    if nightBool and n2_std_with_valid_pixels > band7_std_night_th and h8_band3 < band3_th and h8_band3_plus_4 < band3_plus_4_th and h8_band7 > band7_relative_night_th and h8_band7_14 > band7_14_night_th:
-        pass
+    con1 = ((band7_14_ws7_mean > 6.57) + np.logical_and(6.35 < ws15_norm_sum, ws15_norm_sum < 7.0) + (band7_ws15_norm > 2.91) + (h8_band7_14 > 12.3) - 4) > 0
+    con2 = ((band7_14_ws7_mean > 4.4) + np.logical_and(7.61 < ws15_norm_sum, ws15_norm_sum < 8.0) + (band7_ws15_norm > 3.47) + (h8_band7_14 > 8.4) - 4) > 0
+    con3 = ((band7_14_ws7_mean > 2.1) + np.logical_and(8 < ws15_norm_sum, ws15_norm_sum < 9.0) + (band7_14_ws15_norm > 4.26) + (h8_band7_14 > 6.6) - 4) > 0
+    ret = np.logical_or(ret, np.logical_or(con1, (np.logical_or(con3, con2))))
 
+    ret = np.logical_and(ret, np.logical_not(th_mat))
+
+
+    # if nightBool and n2_std_with_valid_pixels > band7_std_night_th and h8_band3 < band3_th and h8_band3_plus_4 < band3_plus_4_th and h8_band7 > band7_relative_night_th and h8_band7_14 > band7_14_night_th:
+    #     pass
+    datetime_tmp = curr_datetime.strftime("%Y/%m/%d %H:%M")
+    (lat_idx_arr, lon_idx_arr) = np.where(ret == 1)
+    total = len(lat_idx_arr)
+    print(total)
     num = 0
-    print(f'Processing:{pk_filename}')
-    for lat_idx in range(yunnan_min_lat_idx, yunnan_max_lat_idx + 1):
-        for lon_idx in range(yunnan_min_lon_idx, yunnan_max_lon_idx + 1):
-
-            # 计算像元的若干特征，用于火点判别
-            # n3 - 通道3反射率; n4 - 通道7亮温值; n5 - 通道7减通道14亮温差值;
-            # n1_std_with_valid_pixels - 通道7亮温值标准化结果; n2_std_with_valid_pixels - 通道7减通道14亮温差值标准化结果;
-            # band7_14_mean - 通道7减通道14亮温均值; nightBool - 夜判结果; cloudBool - 云判结果; waterBool - 水判结果;
-            # band7_mean_size7 - 小窗口通道7均值; band7_14_mean_size7 - 小窗口通道7减通道14亮温均值;
-            # n_cloud - 通道3减通道4反射率标准化结果, n_cloud_band2 - 通道2反射率标准化结果
-            n3, n4, n5, n1_std_with_valid_pixels, n2_std_with_valid_pixels, band7_14_mean, nightBool, cloudBool, waterBool,\
-            band7_mean_size7, band7_14_mean_size7, n_cloud, n_cloud_band2 = fdj.hd_test(h8_band3,
-                                                                                        h8_band7,
-                                                                                        h8_band14,
-                                                                                        lat_idx,
-                                                                                        lon_idx,
-                                                                                        h8_band4,
-                                                                                        h8_band15,
-                                                                                        h8_band6,
-                                                                                        h8_band3_plus_4,
-                                                                                        h8_band2, kernel_cloud,
-                                                                                        size=15
-                                                                                        )
-            band3_data = h8_band3[lat_idx, lon_idx]  # 获取3通道反射率
-            band4_data = h8_band4[lat_idx, lon_idx]  # 获取4通道反射率
-            band3plus4_data = band3_data + band4_data  # 计算通道3与通道4反射率的和，用于判云
-            datetime_tmp = curr_datetime.strftime("%Y/%m/%d %H:%M")
-
-            # 基于背景像元的相对火点判据
-
-
-    if fire_relative_df.shape[0] <= 1:
-        return
-    # 对火点进行聚类操作
-    fire_lons = fire_relative_df['Lons'].values.reshape(-1)
-    fire_lats = fire_relative_df['Lats'].values.reshape(-1)
-    if len(fire_lons) >= 2 or len(fire_lats) >= 2:
-        comb_lons = list()
-        comb_lats = list()
-
-        resize_ptrs = np.array([[item_x, item_y] for item_x, item_y in zip(fire_lons, fire_lats)])
-        ptrs_clusters = DBSCAN(eps=0.03, min_samples=2).fit(resize_ptrs)
-        max_cluster_label = np.max(ptrs_clusters.labels_)
-        for cluster_i in np.arange(0, max_cluster_label + 1):
-            cur_clust_elmidxs = np.where(ptrs_clusters.labels_ == cluster_i)[0]     # 获取当前标签为i的聚类元素索引值
-            cur_clust_avglon = np.mean(resize_ptrs[cur_clust_elmidxs, 0])           # 计算当前聚类平均经度
-            cur_clust_avglat = np.mean(resize_ptrs[cur_clust_elmidxs, 1])           # 计算当前聚类平均纬度
-            comb_lons.append(round(cur_clust_avglon, 2))
-            comb_lats.append(round(cur_clust_avglat, 2))
-
-        fire_lons_dbscan = comb_lons
-        fire_lats_dbscan = comb_lats
-        output_dbscan = pd.DataFrame()
-        output_dbscan['Lons'] = fire_lons_dbscan
-        output_dbscan['Lats'] = fire_lats_dbscan
-        output_dbscan['Time'] = fire_relative_df['Time'][0]
-        time_str = fire_relative_df['Time'][0]
-        time_str = datetime.datetime.strftime(datetime.datetime.strptime(time_str, "%Y/%m/%d %H:%M"), '%Y%m%d%H%M')
-        output_dbscan.to_csv('./fire_detection/output_dbscan/' + 'SHJC' + time_str + '_dbscan.csv')
-        fire_relative_df['dbscan'] = ptrs_clusters.labels_
-
-    # 保存绝对火点
-    if fire_absolute_df.shape[0] > 0:
-        fire_absolute_csv = 'SHJC' + curr_datetime.strftime('%Y%m%d%H%M') + '5_absolute.csv'
-        fire_absolute_df.to_csv("./fire_detection/output_absolute/" + fire_absolute_csv)
-
-    # 根据火点聚类，筛出面积过大的火点
-    if fire_relative_df.shape[0] > 0:
-        fire_relative_df.to_csv(f"./fire_detection/output/{pk_filename}5.csv", index=False)
-        fire_eliminate_df = cloudEliminate(fire_relative_df, num_of_cluster_th)
-        if fire_eliminate_df.shape[0] > 0:
-            fire_eliminate_df.to_csv(f"./fire_detection/output_eliminate/{pk_filename}5.csv", index=False)
+    for lat_idx, lon_idx in zip(lat_idx_arr, lon_idx_arr):
+        fire_relative_df = fire_relative_df.append(
+            {'Time': datetime_tmp, 'Lons': lon_list[lon_idx], 'Lats': lat_list[lat_idx]},
+            ignore_index=True)
+        num += 1
+        print("\rProgress: " + str(round(num * 100 / total, 2)) + "%", end="")
+    end_time = time.time()
+    print((end_time - start_time)/60)
 
 
 if __name__ == '__main__':
-    h = Himawari("./fire_detection/H8_pk/SHJC202102231630.pk")
-    fire_detection("./fire_detection/H8_pk/", h)
+    # fire_detection("./Temp/SHJC202103131530.pk")
+    a = [1, 2, 3]
+    print(a[:, None] + [1, 2, 3])
